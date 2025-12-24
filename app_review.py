@@ -15,6 +15,12 @@ import config
 def plot_review():
     print(f"\n--- 📊 Auditoría Histórica: {config.SYMBOL} ---")
     
+    # --- CORRECCIÓN: INICIAR CONEXIÓN MT5 ---
+    if not data_loader.initialize_mt5():
+        print("❌ Error: No se pudo conectar a MetaTrader 5")
+        return
+    # ----------------------------------------
+
     # 1. Cargar el Modelo
     if ai_logic.load_model() is None:
         return
@@ -25,20 +31,33 @@ def plot_review():
     start_date = end_date - timedelta(days=7) # 7 días atrás
     
     # Velas
-    df_c = data_loader.get_candles(config.SYMBOL, config.TIMEFRAME, n_candles=10000)
+    # Descargamos un buffer grande para asegurar que cubrimos la fecha
+    df_c = data_loader.get_candles(config.SYMBOL, config.TIMEFRAME, n_candles=15000)
+    
+    if df_c is None:
+        print(f"❌ Error: No se encontraron velas para {config.SYMBOL}")
+        return
+
+    # Filtramos por fecha
     df_c = df_c.filter(pl.col("time") >= start_date)
     
     # Ticks (CVD)
-    print("2. Descargando ticks para reconstruir CVD...")
+    print("2. Descargando ticks para reconstruir CVD (paciencia)...")
     df_t = data_loader.get_ticks(config.SYMBOL, start_date, end_date)
     
-    if df_c is None or df_t is None: return
+    if df_t is None:
+        print("❌ Error: No se encontraron ticks (o tardó demasiado).")
+        return
 
     # 3. Recalcular Señales
     print("3. La IA está re-analizando el pasado...")
     cvd = indicators.calculate_synthetic_cvd(df_t, config.TIMEFRAME_POLARS)
     df = feature_engineering.create_dataset(df_c, cvd)
     
+    if df.is_empty():
+        print("⚠️ Advertencia: El dataset generado está vacío.")
+        return
+
     # Pasar a Pandas para graficar
     df_pd = df.to_pandas()
     
