@@ -74,7 +74,7 @@ def train_and_save():
         return precision_score(y_test, preds, average='weighted', zero_division=0)
 
     study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=10) # 10 pruebas rápidas
+    study.optimize(objective, n_trials=50) # 10 pruebas rápidas
     
     print(f"   Mejor Precisión lograda: {study.best_value:.2%}")
     print(f"   Mejores parámetros: {study.best_params}")
@@ -89,4 +89,3 @@ def train_and_save():
 
 if __name__ == "__main__":
     train_and_save()
-    
