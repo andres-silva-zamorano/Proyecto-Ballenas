@@ -66,7 +66,7 @@ El desarrollo es 100% en **Python**, priorizando modularidad y escalabilidad.
 1.  **Conectividad:** `MetaTrader5` (Librería Python oficial) para obtención de datos en tiempo real y ejecución de órdenes.
 2.  **Procesamiento de Datos:** `Polars`, `numpy`.
 3.  **Machine Learning (Clasificación):** `scikit-learn` (Árboles de decisión, Random Forest, etc.) para detección de regímenes y señales.
-4.  **Deep Learning:** `TensorFlow` / `Keras` o `PyTorch` (Redes Neuronales profundas).
+4.  **Deep Learning:** `TensorFlow` / `Keras` o `PyTorch`. Se utilizarán arquitecturas recurrentes **GRU (Gated Recurrent Units)** para procesar series temporales y dotar al sistema de "memoria" sobre la evolución del precio.
 5.  **Optimización:** `Optuna`. Indispensable para el ajuste de hiperparámetros tanto de modelos ML como de lógica de trading.
 
 ---
@@ -112,7 +112,7 @@ Validación de la lógica de "Manos Fuertes" en el pasado reciente.
 5.  **Documentación en Código:** Funciones y clases deben tener *Docstrings* claros explicando qué hacen, entradas y salidas.
 6.  **Conexión Híbrida:** Aunque el entrenamiento es con CSV (histórico), la producción debe usar obligatoriamente la librería `MetaTrader5` de Python.
 7.  **No se usará librería Pandas:** Usaremos siempre la libreria Polars, jamás usaremos la librería Pandas.
-
+8.  **No se usarán iconos en las terminales DOS:** No se usan iconos. Usar libreria de colores para texto.
 ---
 
 ## 6. Estructura de Archivos Sugerida (Draft)
@@ -131,7 +131,7 @@ proyecto_ballenas/
 │   │
 │   ├── features/
 │   │   ├── indicators.py      # Cálculo de ADX, ATR, EMA, etc.
-│   │   └── regimes.py         # Lógica de detección de los 7 regímenes
+│   │   └── regimes.py         # Lógica de detección de los 7 regímenes. Esto ya viene en el archivo Dataset_Con_Regimenes.csv
 │   │
 │   ├── models/
 │   │   ├── trainer.py         # Lógica de entrenamiento (sklearn/NN)
@@ -148,4 +148,4 @@ proyecto_ballenas/
 ├── backtest_validator_v1.py   # Script para Etapa 1.B (10-15 días)
 ├── main_auto_v2.py            # Orquestador futuro para Etapa 2
 ├── requirements.txt           # Dependencias (Polars, sklearn, optuna, etc.)
-└── CONTEXTO_PROYECTO.md       # Este archivo
+└── CONTEXTO.md                # Este archivo
