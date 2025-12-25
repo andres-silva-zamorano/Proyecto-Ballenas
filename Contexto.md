@@ -111,6 +111,7 @@ Validación de la lógica de "Manos Fuertes" en el pasado reciente.
 4.  **Optimización Continua:** Uso obligatorio de `Optuna` para encontrar los mejores parámetros en cada etapa de experimentación.
 5.  **Documentación en Código:** Funciones y clases deben tener *Docstrings* claros explicando qué hacen, entradas y salidas.
 6.  **Conexión Híbrida:** Aunque el entrenamiento es con CSV (histórico), la producción debe usar obligatoriamente la librería `MetaTrader5` de Python.
+7.  **No se usará librería Pandas:** Usaremos siempre la libreria Polars, jamás usaremos la librería Pandas.
 
 ---
 
@@ -146,5 +147,5 @@ proyecto_ballenas/
 ├── main_monitor_v1.py         # Orquestador para Etapa 1 (Consola)
 ├── backtest_validator_v1.py   # Script para Etapa 1.B (10-15 días)
 ├── main_auto_v2.py            # Orquestador futuro para Etapa 2
-├── requirements.txt           # Dependencias (pandas, sklearn, optuna, etc.)
+├── requirements.txt           # Dependencias (Polars, sklearn, optuna, etc.)
 └── CONTEXTO_PROYECTO.md       # Este archivo
