@@ -9,7 +9,7 @@ class DataLogger:
         
         # --- CALIBRACIÓN HORARIA ---
         # Ajusta aquí según la diferencia que viste en tu escáner.
-        self.BROKER_OFFSET_HOURS = 2      
+        self.BROKER_OFFSET_HOURS = 0      
         self.BROKER_OFFSET_MINUTES = 0    
         
         # --- DEFINICIÓN DE COLUMNAS ---
