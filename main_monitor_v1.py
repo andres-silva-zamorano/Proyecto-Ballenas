@@ -4,7 +4,7 @@ import polars as pl
 from colorama import init, Fore, Back, Style
 from src.connection.mt5_connector import MT5Connector
 from src.features.indicators import TechnicalIndicators
-from src.analysis.microstructure import MicrostructureAnalyzer
+from src.features.microstructure import MicrostructureAnalyzer
 from src.utils.logger import DataLogger
 from src.models.predictor import MarketPredictor  # <--- NUEVO IMPORT
 
