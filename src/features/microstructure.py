@@ -7,53 +7,58 @@ class MicrostructureAnalyzer:
 
     def analizar_flujo(self, df_ticks: pl.DataFrame) -> dict:
         """
-        Calcula el desbalance de compradores vs vendedores en los últimos N tics.
-        Retorna:
-          - status: "OK" o "EMPTY"
-          - desbalance: float (-1.0 (venta extrema) a 1.0 (compra extrema))
-          - intensidad: int (total de tics analizados)
-          - compras: int (volumen estimado de ask)
-          - ventas: int (volumen estimado de bid)
+        Calcula la Presión de Ballenas detectando desplazamientos de liquidez.
+        
+        LÓGICA CORREGIDA (Whale Detector v2):
+        - Solo contamos como COMPRA si el ASK se desplaza hacia ARRIBA (agresión compradora).
+        - Solo contamos como VENTA si el BID se desplaza hacia ABAJO (agresión vendedora).
+        - Ignoramos tics estáticos (ruido).
         """
-        # Validación básica de datos
-        if df_ticks is None or df_ticks.height < 10:
+        # 1. Validación de seguridad
+        if df_ticks is None or df_ticks.height < 5:
             return {"status": "EMPTY", "desbalance": 0.0, "compras": 0, "ventas": 0, "intensidad": 0}
 
-        # --- LÓGICA DE PRESIÓN (TICK AGGRESSION) ---
-        # Determinamos si un tic fue "compra agresiva" (golpeó el Ask) o "venta agresiva" (golpeó el Bid).
-        # Usamos el cambio de precio del 'bid' como proxy simple:
-        # - Si el bid sube o se mantiene, asumimos presión de compra que sostiene el precio.
-        # - Si el bid baja, asumimos presión de venta que empuja el precio.
-        
-        # 1. Calcular el delta (cambio) del precio bid respecto al tic anterior
         try:
-            df_calc = df_ticks.with_columns(
+            # 2. Calcular Deltas (Cambios respecto al tick anterior)
+            # Necesitamos ver cómo se movió el Bid y el Ask
+            df_calc = df_ticks.with_columns([
+                (pl.col("ask") - pl.col("ask").shift(1)).fill_null(0.0).alias("delta_ask"),
                 (pl.col("bid") - pl.col("bid").shift(1)).fill_null(0.0).alias("delta_bid")
-            )
+            ])
             
-            # 2. Clasificar tics
-            # Compras: Tics donde el bid NO bajó (delta >= 0)
-            ticks_compra = df_calc.filter(pl.col("delta_bid") >= 0).height
-            # Ventas: Tics donde el bid SÍ bajó (delta < 0)
+            # 3. Clasificar Agresividad (Filtrado Estricto)
+            
+            # COMPRAS: Alguien compró tanto que el Ask subió (> 0)
+            # (Eliminamos el >= 0 que causaba el error de 'siempre verde')
+            ticks_compra = df_calc.filter(pl.col("delta_ask") > 0).height
+            
+            # VENTAS: Alguien vendió tanto que el Bid bajó (< 0)
             ticks_venta = df_calc.filter(pl.col("delta_bid") < 0).height
             
-            total_ticks = ticks_compra + ticks_venta
+            # Total de eventos RELEVANTES (excluyendo ruido estático)
+            total_eventos = ticks_compra + ticks_venta
             
-            if total_ticks == 0:
-                 return {"status": "EMPTY", "desbalance": 0.0}
+            # Si el mercado está muy quieto (solo ruido), devolvemos 0 neutral
+            if total_eventos == 0:
+                 return {
+                    "status": "OK", 
+                    "desbalance": 0.0, 
+                    "intensidad": df_ticks.height, # Guardamos cuántos ticks totales vimos
+                    "compras": 0, 
+                    "ventas": 0
+                }
 
-            # 3. Calcular Desbalance (Score de -1 a 1)
-            # Fórmula: (Compras - Ventas) / Total
-            score = (ticks_compra - ticks_venta) / total_ticks
+            # 4. Calcular Desbalance Normalizado (-1.0 a 1.0)
+            score = (ticks_compra - ticks_venta) / total_eventos
             
             return {
                 "status": "OK",
                 "desbalance": score,
-                "intensidad": total_ticks,
+                "intensidad": df_ticks.height,
                 "compras": ticks_compra,
                 "ventas": ticks_venta
             }
             
         except Exception as e:
             print(f"[MICRO ERROR] {e}")
-            return {"status": "ERROR", "desbalance": 0.0}
+            return {"status": "ERROR", "desbalance": 0.0, "compras": 0, "ventas": 0, "intensidad": 0}
