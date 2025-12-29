@@ -44,3 +44,4 @@ def generar_resumen():
 
 if __name__ == "__main__":
     generar_resumen()
+    

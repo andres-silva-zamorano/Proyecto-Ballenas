@@ -5,17 +5,16 @@ import csv
 from datetime import datetime
 from colorama import init, Fore, Back, Style
 import polars as pl
-import pandas as pd
-import pandas_ta as ta
-import MetaTrader5 as mt5_lib # <--- NECESARIO: Para obtener el tick directo
+import MetaTrader5 as mt5_lib 
 
-# --- 1. CORRECCIÓN DE RUTAS ---
+# --- 1. CONFIGURACIÓN DE RUTAS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
-# --- 2. IMPORTACIONES ---
+# --- 2. IMPORTACIONES DEL PROYECTO ---
 from src.connection.mt5_connector import MT5Connector
 from src.features.microstructure import MicrostructureAnalyzer 
+from src.features.indicators import TechnicalIndicators # <--- AHORA SÍ SE USA
 from src.utils.logger import DataLogger
 from src.models.predictor import MarketPredictor
 
@@ -23,7 +22,7 @@ init(autoreset=True)
 
 # --- CONFIGURACIÓN ---
 SYMBOL = "BTCUSD"
-TIMEFRAME = mt5_lib.TIMEFRAME_M1 # Usamos la constante de la librería
+TIMEFRAME = mt5_lib.TIMEFRAME_M1 
 HISTORY_BARS = 1000 
 
 REGIMEN_MAP = {
@@ -35,29 +34,6 @@ REGIMEN_MAP = {
     5: "ALCISTA (F)",
     6: "BAJISTA (F)"
 }
-
-# --- CÁLCULO INDICADORES ---
-def calcular_indicadores_macro(df_pandas):
-    try:
-        df = df_pandas.copy()
-        df['EMA_Princ'] = ta.ema(df['close'], length=80)
-        df['RSI_Val'] = ta.rsi(df['close'], length=14)
-        df['ATR_Act'] = ta.atr(df['high'], df['low'], df['close'], length=14)
-        try:
-            adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
-            if adx_df is not None:
-                 col_adx = [c for c in adx_df.columns if c.startswith('ADX')][0]
-                 df['ADX_Val'] = adx_df[col_adx]
-            else:
-                 df['ADX_Val'] = 0
-        except:
-            df['ADX_Val'] = 0
-        df.fillna(0, inplace=True)
-        df['Close_Price'] = df['close']
-        return df
-    except Exception as e:
-        print(f"Error calculando indicadores: {e}")
-        return df_pandas
 
 # --- VISUALIZACIÓN ---
 def limpiar_consola():
@@ -116,10 +92,12 @@ def render_dashboard(micro, macro, grabando, ia_data):
         precio = macro.get('Close_Price', 0.0)
         ema = macro.get('EMA_Princ', 0.0)
         rsi = macro.get('RSI_Val', 0.0)
+        adx = macro.get('ADX_Val', 0.0)
         print(f"📊 {Style.BRIGHT}MACRO (M1):{Style.RESET_ALL}")
         print(f"   Precio    : {Fore.CYAN}{precio:.2f}{Style.RESET_ALL}")
         print(f"   EMA Trend : {Fore.YELLOW}{ema:.2f}{Style.RESET_ALL}")
         print(f"   RSI       : {rsi:.1f}") 
+        print(f"   ADX       : {adx:.1f}") 
     else:
         print("Cargando indicadores macro...")
 
@@ -158,33 +136,33 @@ def render_dashboard(micro, macro, grabando, ia_data):
     print(f"   Balance   : [{color_state}{barra_str}{Style.RESET_ALL}]")
     print("-" * 70)
 
-# --- MAIN ---
+# --- BUCLE PRINCIPAL ---
 def main():
     print("Iniciando Sistema Ballenas IA...")
     
-    # CORRECCIÓN 1: Instancia sin argumentos (Tu __init__ no pide symbol)
+    # 1. Instancias
     mt5_con = MT5Connector() 
     if not mt5_con.conectar(): return
 
     micro_analyzer = MicrostructureAnalyzer() 
+    technical_calc = TechnicalIndicators() # Motor Polars
     logger = DataLogger() 
     predictor = MarketPredictor() 
     
-    if not predictor.cargar_modelos():
-        print(Fore.RED + "ADVERTENCIA: No se encontraron modelos IA.")
+    # Verificación de carga
+    if not predictor.loaded:
+        print(Fore.RED + "ADVERTENCIA: No se pudieron cargar los modelos en MarketPredictor.")
         time.sleep(2)
+    else:
+        print(Fore.GREEN + "[IA] Modelos listos para inferencia.")
     
     print("Sincronizando histórico...")
-    # CORRECCIÓN 2: Usar 'obtener_velas_recientes' que SÍ existe en tu conector
-    # Convertimos Polars a Pandas para el cálculo de indicadores
-    df_pl = mt5_con.obtener_velas_recientes(SYMBOL, timeframe=TIMEFRAME, num_velas=HISTORY_BARS)
+    df_raw_pl = mt5_con.obtener_velas_recientes(SYMBOL, timeframe=TIMEFRAME, num_velas=HISTORY_BARS)
     
-    if df_pl is None or df_pl.height == 0:
+    if df_raw_pl is None or df_raw_pl.height == 0:
         print("Error: No se pudo obtener histórico inicial.")
         return
         
-    df_raw = df_pl.to_pandas()
-
     print(Fore.GREEN + "Sistema EN LÍNEA. Escuchando mercado...")
     time.sleep(1)
 
@@ -194,15 +172,14 @@ def main():
         df_ticks_acumulado = pl.DataFrame()
 
         while True:
-            # CORRECCIÓN 3: Tu conector NO tiene 'obtener_tick_actual'.
-            # Usamos la librería mt5 directa ya que la conexión está abierta.
+            # A. TICK EN TIEMPO REAL
+            # Usamos librería directa porque el conector no tiene método 'tick_actual'
             tick_raw = mt5_lib.symbol_info_tick(SYMBOL)
             
             if tick_raw:
-                # Convertimos el tick raw a diccionario compatible
                 tick = tick_raw._asdict()
                 
-                # 1. ACUMULAR TICK
+                # 1. Acumular Tick (Para Microestructura)
                 nuevo_tick = pl.DataFrame({
                     "time": [tick['time']], 
                     "bid": [tick['bid']], 
@@ -213,48 +190,58 @@ def main():
                 
                 try:
                     df_ticks_acumulado = pl.concat([df_ticks_acumulado, nuevo_tick])
+                    # Ventana deslizante de 1000 ticks
                     if df_ticks_acumulado.height > 1000:
                         df_ticks_acumulado = df_ticks_acumulado.tail(1000)
                 except:
                     df_ticks_acumulado = nuevo_tick
 
-                # 2. PROCESAR MICRO
+                # 2. Análisis Micro (Ballenas)
                 metrics_micro = micro_analyzer.analizar_flujo(df_ticks_acumulado)
 
-                # 3. MACROESTRUCTURA
+                # 3. Análisis Macro (Solo si cambia el tiempo o cada X ms)
                 ts_actual = int(tick['time'])
                 metrics_macro = {}
                 ia_result = {}
                 
                 if ts_actual > ultimo_segundo:
-                    # CORRECCIÓN: Usar tu nombre de método real
-                    df_new_pl = mt5_con.obtener_velas_recientes(SYMBOL, timeframe=TIMEFRAME, num_velas=200)
+                    # B. OBTENER VELAS RECIENTES (Polars)
+                    df_candles = mt5_con.obtener_velas_recientes(SYMBOL, timeframe=TIMEFRAME, num_velas=200)
                     
-                    if df_new_pl is not None and df_new_pl.height > 0:
-                        df_new = df_new_pl.to_pandas()
-                        df_indicators = calcular_indicadores_macro(df_new)
-                        last_row = df_indicators.iloc[-1].to_dict()
-                        metrics_macro = last_row
+                    if df_candles is not None and df_candles.height > 50:
+                        # C. CALCULAR INDICADORES (Usando el módulo features)
+                        # Retorna un diccionario con la última fila lista
+                        metrics_macro = technical_calc.calcular_features(df_candles)
                         
-                        prediccion = predictor.predecir_tiempo_real(last_row)
-                        if prediccion:
-                            metrics_macro["Regimen_Actual"] = prediccion["regimen"]
-                            metrics_macro["probs"] = prediccion["probs"]
-                            for i, p in enumerate(prediccion["probs"]):
+                        # D. PREDICCIÓN IA
+                        if predictor.loaded and metrics_macro:
+                            # metrics_macro ya tiene las claves exactas que pide el predictor
+                            regimen, probs = predictor.predecir(metrics_macro)
+                            
+                            ia_result = {
+                                "regimen": regimen,
+                                "probs": probs
+                            }
+                            
+                            # Inyectar resultados al macro para el logger
+                            metrics_macro["Regimen_Actual"] = regimen
+                            metrics_macro["probs"] = probs
+                            for i, p in enumerate(probs):
                                 metrics_macro[f"prob_regimen_{i}"] = p
-                            ia_result = prediccion
                     
                     ultimo_segundo = ts_actual
 
-                    # 4. RENDERIZAR
+                    # E. VISUALIZAR
                     render_dashboard(metrics_micro, metrics_macro, grabando, ia_result)
 
-                    # 5. GUARDAR
+                    # F. GUARDAR DATOS (Logger + Live Lite)
                     if metrics_macro and metrics_micro.get("status") == "OK":
                         ts_ms = int(time.time() * 1000)
                         
+                        # 1. Histórico Completo
                         logger.guardar_snapshot(ts_ms, metrics_micro, metrics_macro, df_ticks_acumulado)
                         
+                        # 2. Archivo Ligero para Dashboard Live
                         lite_path = os.path.join("data", "raw", "live_lite.csv")
                         row_lite = [
                             ts_ms,
@@ -274,13 +261,13 @@ def main():
                         
                         grabando = True
 
-            time.sleep(0.01)
+            time.sleep(0.01) # 10ms de descanso para no quemar CPU
 
     except KeyboardInterrupt:
         mt5_con.desconectar()
         print("\nMonitor detenido.")
     except Exception as e:
-        print(f"\nERROR: {e}")
+        print(f"\nERROR CRÍTICO: {e}")
         import traceback
         traceback.print_exc()
         if 'mt5_con' in locals(): mt5_con.desconectar()

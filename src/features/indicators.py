@@ -7,100 +7,142 @@ class TechnicalIndicators:
 
     def calcular_features(self, df_velas: pl.DataFrame) -> dict:
         """
-        Calcula indicadores técnicos avanzados para coincidir con Dataset_Con_Regimenes.csv
+        Calcula indicadores técnicos usando EXCLUSIVAMENTE Polars.
+        Salida: Diccionario con los valores de la última vela listos para la IA.
         """
-        if df_velas.height < 300: # Necesitamos historial para estabilizar EMAs
+        # Validación de seguridad
+        if df_velas is None or df_velas.height < 300:
             return {}
 
-        # Clonamos para no afectar el original y ordenamos
+        # Clonamos para no afectar el dataframe original del monitor
         df = df_velas.clone()
 
-        # --- 1. PREPARACIÓN DE PRECIOS ---
+        # Parámetros (Alineados con tu entrenamiento)
+        RSI_PERIOD = 14
+        ATR_PERIOD = 14
+        ADX_PERIOD = 14
+        EMA_PRINCIPAL = 80  # Según tu predictor
+
+        # --- 1. PRE-CÁLCULOS (TR, Deltas) ---
         df = df.with_columns([
-            pl.col("close").shift(1).alias("prev_close"),
-            (pl.col("high") - pl.col("low")).alias("tr1"),
-            (pl.col("high") - pl.col("close").shift(1)).abs().alias("tr2"),
-            (pl.col("low") - pl.col("close").shift(1)).abs().alias("tr3")
+            pl.col("close").cast(pl.Float64),
+            pl.col("high").cast(pl.Float64),
+            pl.col("low").cast(pl.Float64),
+            pl.col("tick_volume").cast(pl.Float64),
+            pl.col("close").shift(1).alias("prev_close")
         ])
 
-        # True Range (TR)
-        df = df.with_columns(
-            pl.max_horizontal(["tr1", "tr2", "tr3"]).alias("tr")
+        # True Range
+        df = df.with_columns([
+            (pl.col("high") - pl.col("low")).alias("tr0"),
+            (pl.col("high") - pl.col("prev_close")).abs().alias("tr1"),
+            (pl.col("low") - pl.col("prev_close")).abs().alias("tr2"),
+        ]).with_columns(
+            pl.max_horizontal(["tr0", "tr1", "tr2"]).alias("TR")
         )
 
-        # --- 2. CÁLCULO DE EMAS (10 a 320) ---
-        # EMA Principal (digamos 200) y otras
-        periodos = [10, 20, 40, 80, 160, 320]
-        exprs_ema = [pl.col("close").ewm_mean(span=p, adjust=False).alias(f"EMA_{p}") for p in periodos]
-        df = df.with_columns(exprs_ema)
-        
-        # Definimos EMA Principal (ej. 80 para intradía o 200 macro)
-        ema_princ_col = "EMA_80" 
+        # --- 2. INDICADORES BÁSICOS (EMA, ATR, Vol Relativo) ---
+        df = df.with_columns([
+            pl.col("close").ewm_mean(span=EMA_PRINCIPAL, adjust=False).alias("EMA_Princ"),
+            pl.col("TR").ewm_mean(span=ATR_PERIOD, adjust=False).alias("ATR_Act"),
+            pl.col("tick_volume").rolling_mean(window_size=20).alias("vol_ma")
+        ])
 
-        # --- 3. RSI (14 periodos) ---
-        delta = df["close"].diff()
+        # Derivados Básicos
+        df = df.with_columns([
+            (pl.col("ATR_Act") / pl.col("close")).alias("ATR_Rel"),
+            (pl.col("tick_volume") / pl.col("vol_ma")).fill_nan(0).alias("Volumen_Relativo"),
+            (pl.col("EMA_Princ") - pl.col("EMA_Princ").shift(1)).alias("EMA_Princ_Slope")
+        ])
+
+        # --- 3. RSI (Calculado en Polars nativo) ---
+        # Delta
+        df = df.with_columns((pl.col("close") - pl.col("prev_close")).alias("delta"))
         
-        # Separar ganancias y pérdidas
-        # Nota: En Polars esto es más manual sin librerías externas
-        up = delta.clip(lower_bound=0)
-        down = delta.clip(upper_bound=0).abs()
-        
-        # Medias suavizadas (Wilder's Smoothing es similar a ewm alpha=1/14)
-        roll_up = up.ewm_mean(span=27, adjust=False) # span=2n-1 aprox para Wilder
-        roll_down = down.ewm_mean(span=27, adjust=False)
-        
-        rs = roll_up / roll_down
-        rsi = 100.0 - (100.0 / (1.0 + rs))
-        
-        df = df.with_columns(rsi.alias("RSI_Val"))
+        # Up/Down moves
+        df = df.with_columns([
+            pl.when(pl.col("delta") > 0).then(pl.col("delta")).otherwise(0).alias("gain"),
+            pl.when(pl.col("delta") < 0).then(pl.col("delta").abs()).otherwise(0).alias("loss")
+        ])
+
+        # Medias suavizadas (RMA / Wilder's SMMA es similar a ewm con span=2N-1)
+        # Para RSI 14, span ≈ 27
+        df = df.with_columns([
+            pl.col("gain").ewm_mean(span=27, adjust=False).alias("avg_gain"),
+            pl.col("loss").ewm_mean(span=27, adjust=False).alias("avg_loss")
+        ])
+
+        # RS y RSI final
+        df = df.with_columns([
+            (pl.col("avg_gain") / pl.col("avg_loss")).alias("rs")
+        ]).with_columns(
+            (100 - (100 / (1 + pl.col("rs")))).fill_nan(50).alias("RSI_Val")
+        )
 
         # --- 4. MACD (12, 26, 9) ---
-        ema12 = df["close"].ewm_mean(span=12, adjust=False)
-        ema26 = df["close"].ewm_mean(span=26, adjust=False)
-        macd_line = ema12 - ema26
-        # signal_line = macd_line.ewm_mean(span=9, adjust=False) # No se pide explícitamente en tabla pero es estándar
-        
-        df = df.with_columns(macd_line.alias("MACD_Val"))
-
-        # --- 5. ATR (14) y RELATIVOS ---
-        df = df.with_columns(
-            pl.col("tr").ewm_mean(span=14, adjust=False).alias("ATR_Act")
-        )
-        # ATR Relativo (ATR / Precio)
-        df = df.with_columns(
-            (pl.col("ATR_Act") / pl.col("close") * 100).alias("ATR_Rel")
+        df = df.with_columns([
+            pl.col("close").ewm_mean(span=12, adjust=False).alias("ema12"),
+            pl.col("close").ewm_mean(span=26, adjust=False).alias("ema26")
+        ]).with_columns(
+            (pl.col("ema12") - pl.col("ema26")).alias("MACD_Val")
         )
 
-        # --- 6. PENDIENTE (SLOPE) EMA PRINCIPAL ---
-        # Angulo simple: cambio de la EMA en 1 vela
+        # --- 5. ADX (El que faltaba) ---
+        df = df.with_columns([
+            (pl.col("high") - pl.col("high").shift(1)).alias("up_move"),
+            (pl.col("low").shift(1) - pl.col("low")).alias("down_move")
+        ])
+
+        # Directional Movement (+DM, -DM)
+        df = df.with_columns([
+            pl.when((pl.col("up_move") > pl.col("down_move")) & (pl.col("up_move") > 0))
+              .then(pl.col("up_move")).otherwise(0).alias("plus_dm"),
+            pl.when((pl.col("down_move") > pl.col("up_move")) & (pl.col("down_move") > 0))
+              .then(pl.col("down_move")).otherwise(0).alias("minus_dm")
+        ])
+
+        # Smooth DM y TR
+        df = df.with_columns([
+            pl.col("plus_dm").ewm_mean(span=ADX_PERIOD, adjust=False).alias("smooth_plus"),
+            pl.col("minus_dm").ewm_mean(span=ADX_PERIOD, adjust=False).alias("smooth_minus"),
+            pl.col("TR").ewm_mean(span=ADX_PERIOD, adjust=False).alias("smooth_tr")
+        ])
+
+        # DI+ y DI-
+        df = df.with_columns([
+            (100 * pl.col("smooth_plus") / pl.col("smooth_tr")).alias("plus_di"),
+            (100 * pl.col("smooth_minus") / pl.col("smooth_tr")).alias("minus_di")
+        ])
+
+        # DX y ADX
         df = df.with_columns(
-            (pl.col(ema_princ_col) - pl.col(ema_princ_col).shift(1)).alias("EMA_Princ_Slope")
+            (100 * (pl.col("plus_di") - pl.col("minus_di")).abs() / 
+             (pl.col("plus_di") + pl.col("minus_di"))).fill_nan(0).alias("dx")
+        ).with_columns(
+            pl.col("dx").ewm_mean(span=ADX_PERIOD, adjust=False).alias("ADX_Val")
         )
-        
-        # --- 7. EXTRAER ÚLTIMA FILA (Valores actuales) ---
-        last = df.tail(1)
-        
-        # Mapa exacto a columnas del CSV histórico
-        features = {
-            "Timestamp": str(last["timestamp"][0]),
-            "ATR_Act": last["ATR_Act"][0],
-            "ATR_Rel": last["ATR_Rel"][0],
-            "EMA_Princ": last[ema_princ_col][0],
-            "EMA_Princ_Slope": last["EMA_Princ_Slope"][0],
-            "RSI_Val": last["RSI_Val"][0],
-            "MACD_Val": last["MACD_Val"][0],
-            # Placeholders para ADX/DI (complejo de calcular manual, simulamos 0 por ahora para mantener estructura)
-            "ADX_Val": 0.0, 
-            "DI_Plus": 0.0,
-            "DI_Minus": 0.0,
-            "ADX_Diff": 0.0,
-            "RSI_Velocidad": 0.0, # Requiere diff del RSI anterior
-            "Volumen_Relativo": 1.0, # Requiere media de volumen
-            "Close_Price": last["close"][0]
+
+        # --- 6. EXTRACCIÓN FINAL ---
+        # Tomamos la última fila válida
+        last_row = df.tail(1).to_dicts()[0]
+
+        # Retornamos SOLO lo que pide el Predictor + Datos para el CSV
+        features_dict = {
+            # Datos básicos
+            "Timestamp": str(last_row["timestamp"]),
+            "Close_Price": last_row["close"],
+            
+            # Features para la IA (Deben coincidir con predictor.py)
+            "ATR_Rel": last_row["ATR_Rel"],
+            "RSI_Val": last_row["RSI_Val"],
+            "MACD_Val": last_row["MACD_Val"],
+            "ADX_Val": last_row["ADX_Val"],
+            "EMA_Princ_Slope": last_row["EMA_Princ_Slope"],
+            "Volumen_Relativo": last_row["Volumen_Relativo"],
+            
+            # Extras visuales
+            "EMA_Princ": last_row["EMA_Princ"],
+            "ATR_Act": last_row["ATR_Act"]
         }
-        
-        # Agregar las EMAs individuales
-        for p in periodos:
-            features[f"EMA_{p}"] = last[f"EMA_{p}"][0]
 
-        return features
+        return features_dict
