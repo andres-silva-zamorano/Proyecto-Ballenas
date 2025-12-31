@@ -7,7 +7,7 @@ from collections import deque
 SYMBOL = "BTCUSD" 
 # UMBRAL: 0.20 es conservador. 
 # Si quieres ver operaciones YA para probar, bájalo temporalmente a 0.05 o 0.08.
-UMBRAL_BALLENA = 0.20  
+UMBRAL_BALLENA = 0.15  
 HEARTBEAT_SEC = 30     # Latido cada 30s
 COOLDOWN_SEC = 10      # Esperar 10s antes de repetir la misma señal
 
@@ -72,13 +72,14 @@ class SignalFactory:
                             # Llamamos a la función puente en main_v2
                             await self.manager_callback(event_msg, score_val, self.manager_ref)
 
-            # 4. HEARTBEAT (Latido)
+            # 4. HEARTBEAT (Latido) - VERSIÓN LIMPIA
             current_time = time.time()
             if current_time - self.last_heartbeat > HEARTBEAT_SEC:
                 price_disp = tick.bid if tick else "..."
-                # Solo imprimimos heartbeat si NO estamos en medio de una señal activa
+                # Solo imprimimos si NO hay señal activa
                 if time.time() - self.last_event_ts > COOLDOWN_SEC: 
-                    print(f"💓 [VIVO] Tics: {self.processed_ticks} | Precio: {price_disp} | Silencio...")
+                    # Usamos \r para sobreescribir la misma línea y no llenar la pantalla
+                    print(f"💓 [VIVO] Tics Procesados: {self.processed_ticks} | Precio: {price_disp} | Esperando Ballenas...", end='\r')
                 self.last_heartbeat = current_time
 
             # Pequeña pausa para ceder control al Event Loop
