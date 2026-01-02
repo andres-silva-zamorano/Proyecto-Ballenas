@@ -3,18 +3,20 @@ import MetaTrader5 as mt5
 import sys
 import os
 
+# Asegurar que Python encuentre los módulos en la ruta
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.executor import AsyncExecutor
 from core.risk_sentinel import RiskSentinel
 from logic.signal_factory import SignalFactory
-from logic.basket_manager import BasketManager # <--- IMPORTAR NUEVO
+from logic.basket_manager import BasketManager
 
 # --- PUENTE ENTRE FACTORY Y MANAGER ---
-# Esta función es el pegamento. Cuando Factory grita, esta función se ejecuta.
+# Esta función conecta la detección (Factory) con la ejecución (Manager)
 async def on_whale_signal(event_msg, score, manager):
-    # event_msg es algo como "🐋 ABSORCION_COMPRA (Score: -0.35)"
-    # Extraemos el tipo limpio
+    # event_msg viene como: "🐋 ABSORCION_COMPRA (Score: -0.35)"
+    
+    # Clasificación simple del string
     if "COMPRA" in event_msg:
         tipo = "ABSORCION_COMPRA"
     elif "VENTA" in event_msg:
@@ -22,84 +24,78 @@ async def on_whale_signal(event_msg, score, manager):
     else:
         return
 
-    # Delegar al Manager
+    # Delegar la decisión táctica al Manager
     await manager.process_signal(tipo, score)
 
 async def main():
     print("\n" + "="*50)
-    print("🚀 INICIANDO BALLENAS IA v2.2 (AUTO-TRADING ACTIVADO)")
+    print("🚀 INICIANDO BALLENAS IA v3.0 (SMART EXIT ACTIVATED)")
     print("="*50)
     
+    # 1. Inicializar MT5
     if not mt5.initialize():
-        print("❌ Error MT5")
+        print(f"❌ Error Fatal: No se pudo iniciar MT5. {mt5.last_error()}")
         return
 
-    symbol = "BTCUSD" 
-    mt5.symbol_select(symbol, True)
+    # Configuración del Símbolo
+    symbol = "BTCUSD" # Asegúrate que coincida con tu broker
+    if not mt5.symbol_select(symbol, True):
+        print(f"⚠️ Advertencia: No se pudo seleccionar {symbol}. Verifique el nombre.")
 
-    # 1. Instancias
+    # 2. Instancias de los Módulos
     executor = AsyncExecutor()
     sentinel = RiskSentinel(executor, max_daily_loss=500.0)
-    manager = BasketManager(executor, symbol) # <--- INSTANCIA DEL MANAGER
-    
-    # 2. Configurar Factory con Callback
-    # Ahora Factory necesita saber a quién avisar.
-    # Modificaremos factory para que acepte un callback o lo hacemos en el loop aquí.
-    # Para no tocar Factory de nuevo, usaremos el bucle de Factory y 
-    # cuando retorne evento, llamamos al manager.
-    
+    manager = BasketManager(executor, symbol) # Ahora incluye lógica de Trailing Stop
     factory = SignalFactory(executor) 
     
-    # 3. Estado Inicial
-    await sentinel.sync_initial_balance()
-    print("\n✅ SISTEMA ARMADO: Sentinel + Factory + BasketManager.")
-    print("⚠️ ADVERTENCIA: Este modo EJECUTARÁ ÓRDENES REALES (O Demo).")
-    
-    # 4. TAREAS
-    task_risk = asyncio.create_task(sentinel.monitor_pulse())
-    
-    # Creamos una tarea envoltorio para conectar Factory -> Manager
-    async def run_logic_pipeline():
-        print(f"👁️ PIPELINE: Factory -> Manager escuchando en {symbol}...")
-        while True:
-            # Esperamos tick a tick dentro de factory... 
-            # Como factory.start_stream() es un bucle infinito, necesitamos intervenirlo
-            # O mejor, ejecutamos una versión modificada aquí mismo o editamos factory.
-            
-            # SOLUCIÓN LIMPIA: Ejecutamos el factory normal, pero modificamos SignalFactory
-            # para aceptar un callback. 
-            # PERO para no hacerte editar 3 archivos, usaremos polling en el factory modificado:
-            
-            # Hack rápido: SignalFactory ya imprime. 
-            # Vamos a modificar LIGERA y FINALMENTE el start_stream de Factory para que retorne el evento
-            # en lugar de solo imprimirlo? No, porque es async.
-            
-            # Lo correcto: Pasamos el manager al factory.
-            # Como no quiero que edites factory de nuevo si no quieres, 
-            # te daré la versión FINAL de SignalFactory abajo que llama al manager.
-            pass
-
-    # PARA QUE FUNCIONE TODO JUNTO, NECESITAMOS UN PEQUEÑO CAMBIO EN SIGNAL FACTORY
-    # PARA QUE ACEPTE EL CALLBACK.
-    
-    # Vamos a inyectar el manager en el factory
+    # 3. Inyección de Dependencias (Conectar cables)
     factory.manager_callback = on_whale_signal
     factory.manager_ref = manager
     
-    # Lanzamos el stream (Nota: Necesitas actualizar SignalFactory con el código de abajo)
+    # 4. Estado Inicial
+    await sentinel.sync_initial_balance()
+    
+    print(f"\n✅ SISTEMA ARMADO PARA: {symbol}")
+    print("   1. Sentinel (Riesgo Global): ACTIVO")
+    print("   2. Factory (Detector Ticks): ACTIVO")
+    print("   3. Manager (Gestión Salida): ACTIVO (Trailing Stop)")
+    print("\n⚠️ [Ctrl + C] para detener el bot de forma segura.\n")
+    
+    # 5. LANZAR TAREAS CONCURRENTES (EL CEREBRO MULTITASKING)
+    
+    # Tarea A: Vigilancia de Riesgo (Sentinel)
+    task_risk = asyncio.create_task(sentinel.monitor_pulse())
+    
+    # Tarea B: Vigilancia de Ganancias y Salida (Manager - NUEVO)
+    # Esta tarea corre cada segundo para verificar si hay que cerrar por ganancia
+    task_exit_brain = asyncio.create_task(manager.start_monitoring())
+    
+    # Tarea C: Detección de Señales (Factory)
+    # Esta tarea corre a la velocidad de los ticks del mercado
     task_logic = asyncio.create_task(factory.start_stream())
 
+    # 6. Bucle Principal (Esperar indefinidamente)
     try:
-        await asyncio.gather(task_risk, task_logic)
+        # Gather mantiene vivas todas las tareas
+        await asyncio.gather(task_risk, task_exit_brain, task_logic)
+        
     except asyncio.CancelledError:
-        print("Apagando...")
+        print("\n🛑 Tareas del sistema detenidas.")
+    except Exception as e:
+        print(f"\n❌ Error crítico en el Loop Principal: {e}")
     finally:
+        print("👋 Apagando conexión con MetaTrader 5...")
         mt5.shutdown()
 
 if __name__ == "__main__":
     try:
+        # Fix necesario para asyncio en Windows con subprocesos/sockets
         if os.name == 'nt':
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
         asyncio.run(main())
+        
     except KeyboardInterrupt:
-        pass
+        print("\n👋 Bot detenido manualmente por el usuario.")
+    except Exception as e:
+        print(f"\n❌ Error inesperado al iniciar: {e}")
